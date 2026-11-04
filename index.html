@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#12151d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Flex Budget</title>
+<style>
+:root{--bg:#12151d;--card:#1a1e29;--line:#2a3040;--tx:#eceff6;--mu:#939bb0;--ac:#a6e3cd;--ac2:#b8c4ff;--bad:#ffa3a3;color-scheme:dark}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--tx);font:16px/1.45 ui-rounded,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-variant-numeric:tabular-nums}
+#app{max-width:520px;margin:0 auto;padding:calc(18px + env(safe-area-inset-top)) 16px 120px}
+h1{font-size:22px;font-weight:700;margin-bottom:14px}
+h2{font-size:15px;font-weight:600;color:var(--mu);margin:24px 0 8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:12px}
+.big{font-size:44px;font-weight:700;color:var(--ac);line-height:1.1}
+.neg{color:var(--bad)}
+.mu{color:var(--mu);font-size:14px}
+.v{font-size:20px;font-weight:600;display:block}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.f{display:flex;flex-direction:column;gap:10px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.fund{border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.fund b{display:block;font-weight:600;color:#c8cedd}
+.it{padding:12px 0;border-bottom:1px solid var(--line)}
+.adj{border-left:3px solid var(--ac2);padding-left:12px}
+input,select,button{font:inherit;color:var(--tx);background:#12161f;border:1px solid var(--line);border-radius:12px;padding:12px;width:100%}
+button{background:var(--ac);color:#0c1612;border:0;font-weight:600;cursor:pointer}
+button.s{background:transparent;color:var(--tx);border:1px solid var(--line)}
+button.t{background:none;color:var(--mu);border:0;width:auto;padding:6px 8px;font-weight:500}
+.chip{width:auto;padding:8px 12px;font-size:14px;font-weight:500}
+.chip i{font-style:normal;color:var(--mu);margin-left:6px}
+:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+nav{position:fixed;left:0;right:0;bottom:0;display:flex;gap:2px;background:#151922;border-top:1px solid var(--line);padding:6px 6px calc(6px + env(safe-area-inset-bottom))}
+nav button{background:none;color:var(--mu);padding:12px 0;font-size:13px;border-radius:10px}
+nav button.on{color:var(--ac);background:#1d2230}
+#t{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(86px + env(safe-area-inset-bottom));background:#2a3040;padding:8px 14px;border-radius:12px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s;width:max-content;max-width:90%}
+#t.show{opacity:1;pointer-events:auto}
+@media(prefers-reduced-motion:reduce){#t{transition:none}}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<div id="t"></div>
+<nav></nav>
+<datalist id="cats"><option>Meals<option>Snacks<option>Drinks<option>Transport<option>Shopping<option>Other</datalist>
+<script>
+/* ---------- helpers & storage (all data stays in this browser) ---------- */
+const K='flex-budget-v1',$=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
+const uid=()=>Math.random().toString(36).slice(2,9);
+const pad=n=>String(n).padStart(2,'0');
+const ymd=d=>d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
+const today=()=>ymd(new Date()),mk=()=>today().slice(0,7);
+const r2=n=>Math.round(n*100)/100;
+const num=v=>{const n=parseFloat(v);return isFinite(n)?r2(n):NaN};
+const dl=d=>new Date(d+'T00:00').toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short'});
+let db={cur:'HK$',menu:[],months:{}},tab='home',S={p:'',n:'',c:'',r:null},editing=null,manage=false,tm,undo;
+try{const d=JSON.parse(localStorage.getItem(K));if(d&&d.months)db=d}catch(e){}
+const save=()=>{try{localStorage.setItem(K,JSON.stringify(db))}catch(e){toast('Could not save: browser storage is blocked')}};
+const fmt=n=>db.cur+' '+(r2(n)||0).toLocaleString(undefined,{maximumFractionDigits:2});
+
+/* ---------- month data: a new month copies last month's budget and funds ---------- */
+function M(){
+  const k=mk();
+  if(!db.months[k]){
+    const p=db.months[Object.keys(db.months).sort().pop()];
+    db.months[k]={budget:p?p.budget:0,exp:[],log:[],freeze:[],
+      funds:p?JSON.parse(JSON.stringify(p.funds)):[{id:'flight',name:'Flight savings',amt:0,desc:'',def:1},{id:'groc',name:'Shared groceries',amt:0,desc:'',def:1}]};
+    save();
+  }
+  return db.months[k];
+}
+
+/* ---------- rules: flex pool = budget - protected; allowance = remaining flex / days left (today included) ---------- */
+function calc(){
+  const m=M(),t=new Date(),dim=new Date(t.getFullYear(),t.getMonth()+1,0).getDate();
+  const P=m.funds.reduce((s,f)=>s+f.amt,0),spent=m.exp.reduce((s,e)=>s+e.amt,0);
+  const R=r2(m.budget-P-spent),D=dim-t.getDate()+1;
+  return{m,P:r2(P),spent:r2(spent),R,D,A:Math.max(R,0)/D};
+}
+function simulate(c){
+  const{R,D,A}=calc(),r={c,R,D,A,A2:(R-c)/D};
+  if(c>R)r.kind='over';
+  else{r.k=Math.ceil(c/A-1e-9);r.kind=r.k>=D?'all':'ok';r.back=r.k<D?(R-c)/(D-r.k):0}
+  return r;
+}
+function why(r){
+  if(r.kind==='over')return`This costs ${fmt(r.c)} but you have ${fmt(Math.max(r.R,0))} of flex left, so you would end up ${fmt(r.c-r.R)} over budget. Freeze days can’t cover that.`;
+  if(r.kind==='all')return`This uses almost all of your remaining flex. To get your allowance back you would have to freeze all ${r.D} remaining days.`;
+  return`Buying this drops your daily allowance from ${fmt(r.A)} to ${fmt(r.A2)}. Freezing flexible spending for ${r.k} day${r.k>1?'s':''} brings it back to about ${fmt(r.back)} a day.`;
+}
+function plan(k){
+  const m=M(),t=new Date(),D=calc().D;let n=0;
+  for(let i=0;i<D&&n<k;i++){const s=ymd(new Date(t.getFullYear(),t.getMonth(),t.getDate()+i));if(!m.freeze.includes(s)){m.freeze.push(s);n++}}
+  m.freeze.sort();save();
+}
+function addExp(amt,name,cat,d){
+  const id=uid();
+  M().exp.push({id,ts:Date.now(),d:d&&d.slice(0,7)===mk()&&d<=today()?d:today(),amt,name:name||'Expense',cat:cat||''});
+  save();return id;
+}
+const delExpense=id=>{const m=M();m.exp=m.exp.filter(e=>e.id!==id);save();render()};
+const log=txt=>M().log.push({id:uid(),ts:Date.now(),d:today(),txt});
+function toast(msg,u){
+  const t=$('#t');undo=u;
+  t.innerHTML=esc(msg)+(u?' <button class="t" data-a="undo">Undo</button>':'');
+  t.className='show';clearTimeout(tm);tm=setTimeout(()=>t.className='',4500);
+}
+
+/* ---------- views ---------- */
+function menu(mode){
+  if(!db.menu.length)return'<p class="mu">No menu items yet. Add some in the Add tab.</p>';
+  const g={};db.menu.forEach(i=>{const k=i.cat||'Other';(g[k]=g[k]||[]).push(i)});
+  const a=manage&&mode==='rec'?'delMenu':mode+'Menu';
+  return Object.keys(g).sort().map(c=>`<div class="mu" style="margin:10px 0 6px">${esc(c)}</div><div class="chips">${g[c].map(i=>`<button class="s chip" data-a="${a}" data-id="${i.id}">${a==='delMenu'?'✕ ':''}${esc(i.name)}<i>${fmt(i.price)}</i></button>`).join('')}</div>`).join('');
+}
+function vHome(){
+  const{m,P,spent,R,D,A}=calc(),fz=m.freeze.filter(d=>d>=today());
+  return`<h1>${new Date().toLocaleDateString(undefined,{month:'long',year:'numeric'})}</h1>
+  <div class="card"><div class="mu">Remaining flex</div><div class="big ${R<0?'neg':''}">${fmt(R)}</div>
+  <div class="grid" style="margin-top:14px"><div><div class="mu">Max flex per day</div><b class="v ${R<0?'neg':''}">${R<0?'Overspent':fmt(A)}</b></div>
+  <div><div class="mu">Days left, today included</div><b class="v">${D}</b></div></div>
+  ${m.budget?'':'<p class="mu" style="margin-top:12px">Start in Funds: set this month’s budget.</p>'}</div>
+  ${m.freeze.includes(today())?'<div class="card">Today is a planned freeze day: no flexible purchases.</div>':''}
+  <h2>Protected funds</h2><div class="grid">${m.funds.map(f=>`<div class="fund"><span class="mu">${esc(f.name)}</span><b>${fmt(f.amt)}</b></div>`).join('')}</div>
+  <p class="mu" style="margin-top:10px">Budget ${fmt(m.budget)} minus protected ${fmt(P)} gives a flex pool of ${fmt(m.budget-P)}. Spent so far: ${fmt(spent)}.</p>
+  <h2>Planned freeze days</h2>${fz.length?`<div class="chips">${fz.map(d=>`<button class="s chip" data-a="unfreeze" data-id="${d}">${dl(d)} ✕</button>`).join('')}</div>`:'<p class="mu">None planned. The simulator can suggest some.</p>'}`;
+}
+function vSim(){
+  const r=S.r;let o='';
+  if(r)o=`<div class="card"><div class="grid">
+    <div><div class="mu">Allowance now</div><b class="v">${fmt(r.A)}</b></div>
+    <div><div class="mu">After buying</div><b class="v ${r.A2<0?'neg':''}">${fmt(Math.max(r.A2,0))}</b></div>
+    <div><div class="mu">Difference</div><b class="v">−${fmt(r.A-Math.max(r.A2,0))}</b></div>
+    <div><div class="mu">Freeze days needed</div><b class="v">${r.k??'–'}</b></div></div>
+    <p style="margin:12px 0">${why(r)}</p>
+    <div class="f"><button data-a="rec">Record this purchase now</button>
+    ${r.k?`<button class="s" data-a="plan">Plan ${r.k} freeze day${r.k>1?'s':''}</button>`:''}
+    <button class="t" data-a="cancel">Cancel / think later</button></div>
+    <p class="mu" style="margin-top:8px">A freeze day means no extra flexible purchases that day. Shared groceries and pre-planned needs are fine.</p></div>`;
+  return`<h1>Spend or freeze?</h1><div class="card f">
+    <input id="sp" type="number" inputmode="decimal" step="any" min="0" placeholder="Price" value="${esc(S.p)}">
+    <input id="sn" placeholder="Name (optional)" value="${esc(S.n)}">
+    <input id="sc" list="cats" placeholder="Category (optional)" value="${esc(S.c)}">
+    <button data-a="sim">Simulate</button></div>${o}
+    <h2>Or simulate a menu item</h2>${menu('sim')}`;
+}
+function vAdd(){
+  return`<h1>Add an expense</h1><div class="card f">
+    <input id="ea" type="number" inputmode="decimal" step="any" min="0" placeholder="Amount">
+    <input id="en" placeholder="What was it? (optional)">
+    <input id="ec" list="cats" placeholder="Category (optional)">
+    <input id="ed" type="date" min="${mk()}-01" max="${today()}" value="${today()}">
+    <button data-a="addExp">Record expense</button></div>
+    <div class="row"><h2>Quick add from your menu</h2><button class="t" data-a="manage">${manage?'Done':'Edit menu'}</button></div>
+    ${manage?'<p class="mu">Tap an item to delete it.</p>':''}${menu('rec')}
+    <h2>Add to your menu</h2><div class="card f">
+    <input id="mn" placeholder="Item name"><input id="mp" type="number" inputmode="decimal" step="any" min="0" placeholder="Usual price">
+    <input id="mc" list="cats" placeholder="Category (Meals, Snacks…)"><button class="s" data-a="addMenu">Save to menu</button></div>`;
+}
+function vHist(){
+  const m=M(),L=[...m.exp.map(e=>({...e,t:1})),...m.log].sort((a,b)=>b.d.localeCompare(a.d)||b.ts-a.ts);
+  const sp=m.exp.reduce((s,e)=>s+e.amt,0);
+  return`<h1>This month</h1><p class="mu" style="margin-bottom:8px">Spent: ${fmt(sp)}. Money moves are marked with a blue edge.</p>`+(L.length?L.map(x=>x.t
+    ?`<div class="row it"><div><b>${esc(x.name)}</b><div class="mu">${dl(x.d)}${x.cat?', '+esc(x.cat):''}</div></div><div>−${fmt(x.amt)} <button class="t" data-a="delExp" data-id="${x.id}">✕</button></div></div>`
+    :`<div class="it adj"><b>${esc(x.txt)}</b><div class="mu">${dl(x.d)}</div></div>`).join(''):'<p class="mu">Nothing recorded yet this month.</p>');
+}
+function vFunds(){
+  const{m,R}=calc();
+  const opts=out=>(out?'<option value="out">New money (a prize, say)</option>':'')+`<option value="flex">Flex (${fmt(R)})</option>`+m.funds.map(f=>`<option value="${f.id}">${esc(f.name)} (${fmt(f.amt)})</option>`).join('');
+  return`<h1>Budget and funds</h1>
+  <div class="card f"><span class="mu">Monthly budget</span><div class="row"><input id="bud" type="number" inputmode="decimal" step="any" min="0" value="${m.budget}"><button class="s" style="width:auto" data-a="setBud">Save</button></div></div>
+  <h2>Protected funds</h2>${m.funds.map(f=>editing===f.id?`<div class="card f">
+    ${f.def?`<b>${esc(f.name)}</b>`:`<input id="fn" value="${esc(f.name)}" placeholder="Name">`}
+    <input id="fa" type="number" inputmode="decimal" step="any" min="0" value="${f.amt}">
+    <input id="fd" value="${esc(f.desc)}" placeholder="Description (optional)">
+    <button data-a="saveFund" data-id="${f.id}">Save fund</button>
+    ${f.def?'':`<button class="s" data-a="delFund" data-id="${f.id}">Remove fund</button>`}
+    <button class="t" data-a="edit" data-id="">Cancel</button></div>`
+  :`<div class="card row"><div><b>${esc(f.name)}</b><div class="mu">${esc(f.desc)}</div></div><div>${fmt(f.amt)} <button class="t" data-a="edit" data-id="${f.id}">Edit</button></div></div>`).join('')}
+  <button class="s" data-a="addFund">Add a custom fund</button>
+  <h2>Move money</h2><div class="card f"><input id="xa" type="number" inputmode="decimal" step="any" min="0" placeholder="Amount">
+  <span class="mu">From</span><select id="xf">${opts(1)}</select><span class="mu">To</span><select id="xt">${opts(0)}</select>
+  <button data-a="move">Move money</button>
+  <p class="mu">New money raises your budget. Flex to a fund lowers your daily allowance; a fund to flex raises it.</p></div>
+  <h2>Settings and backup</h2><div class="card f"><span class="mu">Currency symbol</span><input id="cur" value="${esc(db.cur)}">
+  <button class="s" data-a="export">Export backup</button><span class="mu">Import a backup</span><input id="imp" type="file" accept=".json"></div>`;
+}
+
+/* ---------- actions ---------- */
+const ACT={
+  tab:id=>{tab=id;if(id!=='sim')S.r=null;editing=null;manage=false;render();scrollTo(0,0)},
+  sim:()=>{S.p=$('#sp').value;S.n=$('#sn').value.trim();S.c=$('#sc').value.trim();const p=num(S.p);S.r=p>0?simulate(p):null;render();if(!S.r)toast('Enter a price above 0')},
+  simMenu:id=>{const i=db.menu.find(q=>q.id===id);S={p:String(i.price),n:i.name,c:i.cat,r:simulate(i.price)};render()},
+  rec:()=>{addExp(S.r.c,S.n,S.c);S={p:'',n:'',c:'',r:null};tab='home';render();toast('Purchase recorded')},
+  plan:()=>{plan(S.r.k);S.r=null;tab='home';render();toast('Freeze days planned')},
+  cancel:()=>{S={p:'',n:'',c:'',r:null};render()},
+  recMenu:id=>{const i=db.menu.find(q=>q.id===id),x=addExp(i.price,i.name,i.cat);render();toast('Recorded '+i.name,()=>delExpense(x))},
+  addExp:()=>{const a=num($('#ea').value);if(!(a>0))return toast('Enter an amount above 0');const x=addExp(a,$('#en').value.trim(),$('#ec').value.trim(),$('#ed').value);render();toast('Recorded '+fmt(a),()=>delExpense(x))},
+  delExp:id=>{delExpense(id);toast('Expense deleted')},
+  manage:()=>{manage=!manage;render()},
+  delMenu:id=>{db.menu=db.menu.filter(i=>i.id!==id);save();render()},
+  addMenu:()=>{const n=$('#mn').value.trim(),p=num($('#mp').value);if(!n||!(p>0))return toast('Add a name and a price above 0');db.menu.push({id:uid(),name:n,price:p,cat:$('#mc').value.trim()});save();render();toast('Added to menu')},
+  unfreeze:id=>{const m=M();m.freeze=m.freeze.filter(d=>d!==id);save();render()},
+  edit:id=>{editing=id||null;render()},
+  addFund:()=>{const f={id:uid(),name:'New fund',amt:0,desc:''};M().funds.push(f);save();editing=f.id;render()},
+  saveFund:id=>{
+    const m=M(),f=m.funds.find(q=>q.id===id),a=num($('#fa').value),R=calc().R;
+    if(!(a>=0))return toast('Enter a valid amount');
+    if(a>f.amt&&a-f.amt>R)return toast('Only '+fmt(Math.max(R,0))+' of flex is free to reserve');
+    const n=f.def?f.name:($('#fn').value.trim()||f.name);
+    if(a!==f.amt)log(`${n} changed from ${fmt(f.amt)} to ${fmt(a)}`);
+    f.name=n;f.amt=a;f.desc=$('#fd').value.trim();editing=null;save();render();toast('Fund saved');
+  },
+  delFund:id=>{
+    const m=M(),f=m.funds.find(q=>q.id===id);
+    if(!confirm(`Remove “${f.name}”? Its ${fmt(f.amt)} returns to flex.`))return;
+    log(`Removed ${f.name}; ${fmt(f.amt)} returned to flex`);m.funds=m.funds.filter(q=>q.id!==id);editing=null;save();render();
+  },
+  setBud:()=>{
+    const m=M(),b=num($('#bud').value);
+    if(!(b>=0))return toast('Enter a valid budget');
+    if(b!==m.budget){log(`Budget changed from ${fmt(m.budget)} to ${fmt(b)}`);m.budget=b;save();render()}
+    toast('Budget saved');
+  },
+  move:()=>{
+    const m=M(),R=calc().R,x=num($('#xa').value),f=$('#xf').value,t=$('#xt').value,F=id=>m.funds.find(q=>q.id===id);
+    const nm=id=>id==='flex'?'Flex':F(id).name;
+    if(!(x>0))return toast('Enter an amount above 0');
+    if(f===t)return toast('Choose two different places');
+    if(f==='flex'&&x>R)return toast('Only '+fmt(Math.max(R,0))+' of flex is available');
+    if(F(f)&&x>F(f).amt)return toast(nm(f)+' only holds '+fmt(F(f).amt));
+    if(f==='out')m.budget=r2(m.budget+x);else if(F(f))F(f).amt=r2(F(f).amt-x);
+    if(F(t))F(t).amt=r2(F(t).amt+x);
+    log(f==='out'?`Added ${fmt(x)} of new money to ${nm(t)}`:`Moved ${fmt(x)} from ${nm(f)} to ${nm(t)}`);
+    save();render();toast('Money moved');
+  },
+  export:()=>{
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([JSON.stringify(db,null,1)],{type:'application/json'}));
+    a.download='flex-budget-'+today()+'.json';a.click();
+  },
+  undo:()=>{const u=undo;undo=null;if(u){u();toast('Undone')}}
+};
+document.addEventListener('click',e=>{const b=e.target.closest('[data-a]');if(b&&ACT[b.dataset.a])ACT[b.dataset.a](b.dataset.id)});
+document.addEventListener('change',e=>{
+  if(e.target.id==='cur'){db.cur=e.target.value.trim()||'HK$';save();render();toast('Currency saved')}
+  if(e.target.id==='imp'&&e.target.files[0]){
+    const r=new FileReader();
+    r.onload=()=>{try{
+      const d=JSON.parse(r.result);if(!d.months)throw 0;
+      if(confirm('Replace all data on this device with this backup?')){d.menu=d.menu||[];d.cur=d.cur||'HK$';db=d;save();render();toast('Backup imported')}
+    }catch(x){toast('That is not a valid backup file')}};
+    r.readAsText(e.target.files[0]);
+  }
+});
+
+/* ---------- render ---------- */
+const T={home:['Home',vHome],sim:['Simulate',vSim],add:['Add',vAdd],hist:['History',vHist],funds:['Funds',vFunds]};
+function render(){
+  $('#app').innerHTML=T[tab][1]();
+  $('nav').innerHTML=Object.keys(T).map(k=>`<button class="${k===tab?'on':''}" data-a="tab" data-id="${k}">${T[k][0]}</button>`).join('');
+}
+render();
+</script>
+</body>
+</html>
